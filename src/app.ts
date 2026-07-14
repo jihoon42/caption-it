@@ -46,6 +46,9 @@ import { weightedLength } from "./standards.js";
 export const SERVICE = "caption-it";
 export const VERSION = "0.1.0";
 
+/** PlayMCP 등록 폼의 "MCP 이름"과 글자 단위로 동일해야 함 (em-dash 포함) — 4개 도구 description 접두어용 */
+const SERVICE_DISPLAY = "캡션잇 (CAPTION-IT) — 접근성 자막 도우미";
+
 function json(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
 }
@@ -78,6 +81,7 @@ export function buildServer(): McpServer {
     {
       title: "미디어 전사 (STT)",
       description:
+        `[${SERVICE_DISPLAY}] ` +
         "공개 URL의 음성/영상 파일을 STT로 전사해 타임스탬프 세그먼트를 반환합니다. " +
         "실시간 자막이 아니라 회의 녹음·강의·영상 같은 '남겨진 기록'의 비실시간 처리입니다. " +
         "결과 segments를 build_accessible_captions에 그대로 전달하면 규격 자막이 나옵니다. " +
@@ -90,6 +94,13 @@ export function buildServer(): McpServer {
         language: z.string().default("ko-KR").describe("언어 코드 (기본 ko-KR)"),
         diarization: z.boolean().default(false).describe("화자 분리 시도 (CLOVA/Azure 지원)"),
         provider: z.enum(["clova", "azure", "openai", "mock"]).optional().describe("프로바이더 강제 지정 (기본: 서버 설정)"),
+      },
+      annotations: {
+        title: "미디어 전사 (STT)",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
       },
     },
     async (args: {
@@ -129,6 +140,7 @@ export function buildServer(): McpServer {
     {
       title: "접근성 자막 생성",
       description:
+        `[${SERVICE_DISPLAY}] ` +
         "타임스탬프 세그먼트(또는 타임스탬프 없는 전사 텍스트)를 한국어 접근성 자막 규격에 맞는 WebVTT/SRT로 변환합니다. " +
         "규격: 줄당 16자(라틴·공백 0.5자 가중)·최대 2줄·읽기 속도 상한·최소 노출 5/6초·화자 [이름] 표기·가사 ♪ 표기 " +
         "(Netflix Korean TTSG + 방통위 가이드라인, 근거는 guides://caption-standards 리소스). " +
@@ -157,6 +169,13 @@ export function buildServer(): McpServer {
           .max(100)
           .optional()
           .describe("줄거리에 중요한 소리 정보 [효과음] 큐로 삽입"),
+      },
+      annotations: {
+        title: "접근성 자막 생성",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
       },
     },
     async (args: {
@@ -233,6 +252,7 @@ export function buildServer(): McpServer {
     {
       title: "자막 감사·보정",
       description:
+        `[${SERVICE_DISPLAY}] ` +
         "기존 WebVTT/SRT 자막(유튜브 자동 자막 내보내기 등)을 한국어 접근성 규격으로 감사하고, " +
         "내용을 바꾸지 않는 범위에서 자동 보정본을 만듭니다. " +
         "검사: 읽기 속도(CPS)·줄당 자수·줄 수·노출 시간·큐 겹침·간격·줄 끝 구두점·말줄임표·가사 ♪ 짝·화자/소리 정보 유무(SDH). " +
@@ -246,6 +266,13 @@ export function buildServer(): McpServer {
         support_band: z.enum(["light", "standard", "intensive"]).optional().describe(BAND_DESC),
         autofix: z.boolean().default(true).describe("내용 불변 자동 보정본 생성 여부"),
         output_format: z.enum(["same", "vtt", "srt", "both"]).default("same").describe("보정본 출력 형식 (same=입력과 동일)"),
+      },
+      annotations: {
+        title: "자막 감사·보정",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
       },
     },
     async (args: {
@@ -309,10 +336,18 @@ export function buildServer(): McpServer {
     {
       title: "체험용 샘플 목록",
       description:
+        `[${SERVICE_DISPLAY}] ` +
         "STT 키·오디오 URL 없이 파이프라인을 체험할 수 있는 내장 합성 샘플 목록을 반환합니다. " +
         "전원 가상 콘텐츠이며 실제 회의·강의가 아닙니다. " +
         "사용법: transcribe_media에 sample_id를 전달 → 반환된 segments를 build_accessible_captions로.",
       inputSchema: {},
+      annotations: {
+        title: "체험용 샘플 목록",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async () =>
       json({
