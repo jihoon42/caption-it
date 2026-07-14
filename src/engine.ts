@@ -13,6 +13,7 @@
  */
 import {
   Ruleset,
+  cpsDisplay,
   cpsOf,
   weightedLength,
 } from "./standards.js";
@@ -328,7 +329,7 @@ export function buildCues(
     const extended = Math.min(c.start_ms + neededMs, nextStart - ruleset.min_gap_ms);
     if (extended > c.end_ms) {
       c.end_ms = extended;
-      fixLog.push(`큐 ${i + 1}: 읽기 속도 확보를 위해 노출 연장 (${cpsOf(text, cueDur(c))} CPS)`);
+      fixLog.push(`큐 ${i + 1}: 읽기 속도 확보를 위해 노출 연장 (${cpsDisplay(text, cueDur(c))} CPS)`);
     }
     if (cpsOf(text, cueDur(c)) > ruleset.max_cps) {
       violations.push({
@@ -336,7 +337,7 @@ export function buildCues(
         severity: "warn",
         cue_index: i + 1,
         time: fmtTime(c.start_ms, "vtt"),
-        found: `${cpsOf(text, cueDur(c))} CPS`,
+        found: `${cpsDisplay(text, cueDur(c))} CPS`,
         limit: `${ruleset.max_cps} CPS`,
         suggestion:
           `이 큐는 표시 시간 연장으로도 읽기 속도를 맞출 수 없습니다. ` +
@@ -584,7 +585,7 @@ export function auditCues(cues: Cue[], ruleset: Ruleset): Violation[] {
     if (dur > 0 && cpsOf(text, dur) > ruleset.max_cps)
       push(
         "cps_exceeded", "error", i,
-        `${cpsOf(text, dur)} CPS`, `≤ ${ruleset.max_cps} CPS`,
+        `${cpsDisplay(text, dur)} CPS`, `≤ ${ruleset.max_cps} CPS`,
         "노출 시간을 늘리거나(간격 차용) 텍스트 줄이기를 검토하세요 — 삭제·압축 우선, 의역 금지 (Netflix II.1). 자동 보정은 시간 연장까지만 수행합니다.",
       );
     c.lines.forEach((l) => {
@@ -728,17 +729,19 @@ export function autofixCues(cuesIn: Cue[], ruleset: Ruleset): FixResult {
 
 export function cueStats(cues: Cue[], ruleset: Ruleset) {
   const dialogue = cues.filter((c) => cueText(c).trim());
+  // 통계는 표시용 — 원값으로 집계하고 마지막에 소수 2자리로 반올림 (판정은 auditCues/buildCues 소관)
   const cpsValues = dialogue
     .map((c) => cpsOf(cueText(c), cueDur(c)))
     .filter((v) => Number.isFinite(v));
+  const round2 = (v: number) => Math.round(v * 100) / 100;
   const avg = cpsValues.length
-    ? Math.round((cpsValues.reduce((a, b) => a + b, 0) / cpsValues.length) * 100) / 100
+    ? round2(cpsValues.reduce((a, b) => a + b, 0) / cpsValues.length)
     : 0;
   return {
     cue_count: cues.length,
     total_duration_ms: cues.length ? cues[cues.length - 1].end_ms - cues[0].start_ms : 0,
     avg_cps: avg,
-    max_cps: cpsValues.length ? Math.max(...cpsValues) : 0,
+    max_cps: cpsValues.length ? round2(Math.max(...cpsValues)) : 0,
     cps_limit: ruleset.max_cps,
     ruleset_id: ruleset.id,
   };
