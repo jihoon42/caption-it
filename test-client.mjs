@@ -5,7 +5,16 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const URL_ = process.env.MCP_URL ?? "http://localhost:8080/mcp";
+// MCP_URL이 없으면 빌드된 앱을 인프로세스로 띄운다 (npm test 자급자족 — 외부 서버 불필요)
+let URL_ = process.env.MCP_URL;
+if (!URL_) {
+  const { createApp } = await import("./build/app.js");
+  const srv = await new Promise((resolve) => {
+    const s = createApp().listen(0, "127.0.0.1", () => resolve(s));
+  });
+  process.on("exit", () => srv.close());
+  URL_ = `http://127.0.0.1:${srv.address().port}/mcp`;
+}
 const client = new Client({ name: "test-client", version: "0.1.0" });
 await client.connect(new StreamableHTTPClientTransport(new URL(URL_)));
 
@@ -44,6 +53,7 @@ if (!built.srt?.startsWith("1\n")) fail("SRT 인덱스 없음");
 if (built.stats.max_cps > built.stats.cps_limit) fail(`생성 자막이 CPS 상한 초과: ${built.stats.max_cps}`);
 if (!built.vtt.includes("[진행자]")) fail("화자 라벨 [진행자] 없음");
 if (!built.content_integrity) fail("content_integrity 선언 없음");
+if (!built.standard_note) fail("standard_note 없음 (A-4)");
 console.log(`build: ${built.stats.cue_count} cues, max ${built.stats.max_cps}/${built.stats.cps_limit} CPS`);
 
 // 5. 생성 결과를 다시 감사 → error 0이어야 함
@@ -113,6 +123,7 @@ for (const expected of ["cps_exceeded", "overlap", "duration_too_short", "ascii_
   if (!rules.includes(expected)) fail(`감사에서 ${expected} 미검출 (검출: ${rules.join(",")})`);
 if (!audit.fixed) fail("autofix 보정본 없음");
 if (!audit.fixed.fix_log.length) fail("fix_log 비어 있음");
+if (!audit.standard_note) fail("감사 응답에 standard_note 없음 (A-4)");
 console.log(`audit(broken): ${audit.violations.length} violations 검출 + 보정본 생성 OK`);
 
 // 11. 보정본 재감사 — error가 남으면 remaining_violations로 정직하게 보고되는지

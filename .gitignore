@@ -3,6 +3,12 @@ build/
 server.log
 SUBMISSION.md
 
+# 작업 계획·진행 메모 (공개 레포에 올리지 않음)
+*.md
+
+# 단, README.md 파일은 예외 처리 (추적)
+!README.md
+
 # 테스트용 오디오 (레포에 올리지 않음)
 *.mp3
 *.wav

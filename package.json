@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node build/index.js"
+    "start": "node build/index.js",
+    "demo": "node demo.mjs",
+    "test": "node test-client.mjs && node test/regression-c1.mjs && node test/property.mjs"
   },
   "keywords": ["mcp", "accessibility", "captions", "webvtt", "sdh", "stt"],
   "author": "",

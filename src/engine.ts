@@ -13,6 +13,7 @@
  */
 import {
   Ruleset,
+  cpsDisplay,
   cpsOf,
   weightedLength,
 } from "./standards.js";
@@ -74,11 +75,15 @@ export function normalizeTypography(text: string): { text: string; changes: stri
     t = t.replace(/\.{3,}/g, "…");
     changes.push("말줄임표를 U+2026(…)으로 통일");
   }
-  // 줄(큐) 끝 마침표·쉼표 제거 — 숫자 뒤 마침표(예: "3.")는 보존
+  // 줄(큐) 끝 마침표·쉼표 제거 — 숫자 뒤 마침표(예: "3.")는 보존.
+  // 텍스트 전체가 구두점뿐이면 제거하지 않는다 (내용 삭제가 되므로 — 빈 큐 금지)
   const m = t.match(/([.,]+)$/);
   if (m && !/\d[.,]+$/.test(t)) {
-    t = t.slice(0, -m[1].length).trimEnd();
-    changes.push("줄 끝 마침표·쉼표 제거 (Netflix I.13)");
+    const stripped = t.slice(0, -m[1].length).trimEnd();
+    if (stripped) {
+      t = stripped;
+      changes.push("줄 끝 마침표·쉼표 제거 (Netflix I.13)");
+    }
   }
   return { text: t, changes };
 }
@@ -256,7 +261,10 @@ export interface BuildResult {
 
 /**
  * 핵심 파이프라인: 세그먼트 → 규격 준수 큐
- * 병합 → 타이밍 보정 → CPS 보정(간격 차용) → 화자 라벨 → 가사 표기 → 줄바꿈
+ * 병합 → 라벨 지점 결정 → 장식 합성 → 줄바꿈/분할 → 타이밍·CPS 산술
+ *
+ * 장식(화자 라벨·가사 ♪)은 반드시 산술 "이전"에 텍스트로 확정한다 (C-1/P0-1):
+ * 라벨·♪ 가중치가 CPS·줄바꿈 검증에 포함되지 않으면 미검증 위반이 조용히 산출된다.
  */
 export function buildCues(
   segments: Segment[],
@@ -266,18 +274,23 @@ export function buildCues(
   const fixLog: string[] = [];
   const maxCueWeight = ruleset.max_line_weight * ruleset.max_lines;
   const units = toUnits(segments, maxCueWeight);
+  const useLabels = opts.speaker_labels && ruleset.mode === "sdh";
 
-  // 1) 병합 — 같은 화자·같은 종류·짧은 간격이면서 합쳐도 한도 안일 때
+  const labelOf = (u: Unit) => (useLabels && u.speaker ? `[${u.speaker}] ` : undefined);
+  // 장식 가중치는 실측 (구 labelHeadroom=4는 과소평가 — 예: "[진행자] " = 4.5)
+  const decoWeight = (u: Unit) =>
+    weightedLength(labelOf(u) ?? "") + (u.kind === "lyrics" ? weightedLength("♪  ♪") : 0);
+
+  // 1) 병합 — 같은 화자·같은 종류·짧은 간격이면서 장식 포함으로도 한도 안일 때
   const merged: Unit[] = [];
   for (const u of units) {
     const prev = merged[merged.length - 1];
-    const labelHeadroom = opts.speaker_labels && u.speaker ? 4 : 0;
     if (
       prev &&
       prev.speaker === u.speaker &&
       prev.kind === u.kind &&
       u.start_ms - prev.end_ms < 1500 &&
-      weightedLength(`${prev.text} ${u.text}`) <= maxCueWeight - labelHeadroom &&
+      weightedLength(`${prev.text} ${u.text}`) <= maxCueWeight - decoWeight(u) &&
       u.end_ms - prev.start_ms <= ruleset.max_duration_ms
     ) {
       prev.text = `${prev.text} ${u.text}`;
@@ -285,50 +298,129 @@ export function buildCues(
     } else merged.push({ ...u });
   }
 
-  const cues: Cue[] = merged.map((u) => ({
-    start_ms: u.start_ms,
-    end_ms: u.end_ms,
-    lines: [u.text],
-    speaker: u.speaker,
-    kind: u.kind ?? "dialogue",
-  }));
+  // 2) 화자 전환 지점 결정 — 라벨은 화자가 바뀌는 큐에만 (II.8)
+  const withLabel: { unit: Unit; label?: string }[] = [];
+  let prevSpeaker: string | undefined;
+  for (const u of merged) {
+    const label = u.speaker && u.speaker !== prevSpeaker ? labelOf(u) : undefined;
+    if (u.speaker) prevSpeaker = u.speaker;
+    withLabel.push({ unit: u, label });
+  }
 
-  // 2) 겹침 제거 + 최소 간격 확보 (뒤 큐가 기준)
-  for (let i = 0; i < cues.length - 1; i++) {
-    const limit = cues[i + 1].start_ms - ruleset.min_gap_ms;
-    if (cues[i].end_ms > limit) {
-      cues[i].end_ms = Math.max(cues[i].start_ms + 200, limit);
+  // 3) 표기 정규화 → 장식 합성 → 줄바꿈. 2줄에 담기지 않으면 "대사"를 분할하되
+  //    라벨은 첫 조각의 대사에 붙인다 — 라벨만 남는 유령 큐 금지 (C-1). 텍스트 유실 금지.
+  const compose = (label: string | undefined, text: string, lyrics: boolean) =>
+    lyrics ? `♪ ${label ?? ""}${text} ♪` : `${label ?? ""}${text}`;
+  const violations: Violation[] = [];
+  const finalCues: Cue[] = [];
+  const overflowIdx: number[] = []; // cue_overflow는 타이밍 확정 후 최종 시각으로 선언
+  withLabel.forEach(({ unit: u, label }, i) => {
+    const lyrics = u.kind === "lyrics";
+    const norm = normalizeTypography(u.text);
+    norm.changes.forEach((ch) => fixLog.push(`큐 ${i + 1}: ${ch}`));
+
+    const splitToFit = (text: string, lbl: string | undefined): string[] => {
+      if (!wrapLines(compose(lbl, text, lyrics), ruleset.max_line_weight, ruleset.max_lines).overflow)
+        return [text];
+      const halves = splitClause(text);
+      if (halves.length < 2) return [text]; // 더 못 나눔 — 아래에서 위반으로 정직 신고
+      return halves.flatMap((h, k) => splitToFit(h, k === 0 ? lbl : undefined));
+    };
+    const parts = splitToFit(norm.text, label);
+    if (parts.length > 1)
+      fixLog.push(`큐 ${i + 1}: ${ruleset.max_lines}줄 초과 → ${parts.length}개 큐로 분할 (라벨은 첫 조각 유지)`);
+
+    // 시간은 장식 포함 가중치 비례 배분 — 라벨 조각이 읽기 시간을 더 받는다
+    const composed = parts.map((p, k) => compose(k === 0 ? label : undefined, p, lyrics));
+    const totalW = composed.reduce((s, p) => s + weightedLength(p), 0) || 1;
+    const span = u.end_ms - u.start_ms;
+    let t = u.start_ms;
+    composed.forEach((p, k) => {
+      const dur = k === composed.length - 1 ? u.end_ms - t : (span * weightedLength(p)) / totalW;
+      const wrapped = wrapLines(p, ruleset.max_line_weight, ruleset.max_lines);
+      finalCues.push({
+        start_ms: Math.round(t),
+        end_ms: Math.round(t + dur),
+        lines: wrapped.lines,
+        speaker: u.speaker,
+        kind: u.kind ?? "dialogue",
+      });
+      if (wrapped.overflow) overflowIdx.push(finalCues.length - 1);
+      t += dur;
+    });
+  });
+
+  // 4) 앞 큐 종료 당기기 — 뒤 큐와 겹치면 앞 큐를 줄이되, 읽기 하한
+  //    (최소 노출·CPS 필요 시간) 아래로는 줄이지 않는다. 하한 때문에 못 줄인
+  //    잔여 겹침은 5)의 시작 밀기가 해소한다 (C-3 정책: 쥐어짜기 대신 밀기).
+  const readFloorMs = (text: string) =>
+    Math.max(
+      ruleset.min_duration_ms,
+      Math.min(Math.ceil((weightedLength(text) / ruleset.max_cps) * 1000), ruleset.max_duration_ms),
+    );
+  for (let i = 0; i < finalCues.length - 1; i++) {
+    const c = finalCues[i];
+    const limit = finalCues[i + 1].start_ms - ruleset.min_gap_ms;
+    if (c.end_ms <= limit) continue;
+    const shrunk = Math.max(limit, c.start_ms + readFloorMs(cueText(c)));
+    if (shrunk < c.end_ms) {
+      c.end_ms = shrunk;
       fixLog.push(`큐 ${i + 1}: 다음 큐와의 간격 ${ruleset.min_gap_ms}ms 확보를 위해 종료 시각 조정`);
     }
   }
 
-  // 3) 최소/최대 노출 시간
-  for (let i = 0; i < cues.length; i++) {
-    const c = cues[i];
+  // 5) 시작 밀기 + 최소/최대 노출 — 겹침·간격·노출시간을 완전 보증하는 단일 전진 패스.
+  //    동일/역전 시작 등 공간이 없는 큐는 시작을 뒤로 민다 (동기 오차는 fix_log에 기록).
+  let prevEnd = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < finalCues.length; i++) {
+    const c = finalCues[i];
+    if (Number.isFinite(prevEnd)) {
+      const minStart = prevEnd + ruleset.min_gap_ms;
+      if (c.start_ms < minStart) {
+        const delta = minStart - c.start_ms;
+        c.start_ms += delta;
+        c.end_ms += delta;
+        fixLog.push(`큐 ${i + 1}: 겹침/간격 해소를 위해 시작을 ${delta}ms 뒤로 이동 (동기 오차 발생)`);
+      }
+    }
     if (cueDur(c) < ruleset.min_duration_ms) {
-      const nextStart = i + 1 < cues.length ? cues[i + 1].start_ms : Number.POSITIVE_INFINITY;
-      c.end_ms = Math.min(c.start_ms + ruleset.min_duration_ms, nextStart - ruleset.min_gap_ms);
-      if (cueDur(c) >= ruleset.min_duration_ms)
-        fixLog.push(`큐 ${i + 1}: 최소 노출 ${ruleset.min_duration_ms}ms 확보 (뒤 간격 차용)`);
+      c.end_ms = c.start_ms + ruleset.min_duration_ms;
+      fixLog.push(`큐 ${i + 1}: 최소 노출 ${ruleset.min_duration_ms}ms 확보`);
     }
     if (cueDur(c) > ruleset.max_duration_ms) {
       c.end_ms = c.start_ms + ruleset.max_duration_ms;
       fixLog.push(`큐 ${i + 1}: 최대 노출 ${ruleset.max_duration_ms}ms로 제한`);
     }
+    prevEnd = c.end_ms;
   }
 
-  // 4) CPS 보정 — 표시 시간 연장만 시도. 축약은 하지 않는다.
-  const violations: Violation[] = [];
-  for (let i = 0; i < cues.length; i++) {
-    const c = cues[i];
+  // 타이밍 확정 후 cue_overflow 선언 — 위반의 time이 최종 출력 큐 시각과 일치해야
+  // audit 결과와 대조(불변식 ⓑ)가 가능하다
+  for (const idx of overflowIdx) {
+    const c = finalCues[idx];
+    violations.push({
+      rule: "cue_overflow",
+      severity: "warn",
+      cue_index: idx + 1,
+      time: fmtTime(c.start_ms, "vtt"),
+      found: `${c.lines.length}줄 (${ruleset.max_lines}줄 한도 초과)`,
+      limit: `${ruleset.max_lines}줄 × ${ruleset.max_line_weight}자`,
+      suggestion: "세그먼트를 더 잘게 나눠 다시 호출하거나 텍스트 축약을 검토하세요.",
+    });
+  }
+
+  // 6) CPS 보정 — 라벨·♪ 포함 최종 텍스트로 판정. 표시 시간 연장만, 축약은 하지 않는다.
+  for (let i = 0; i < finalCues.length; i++) {
+    const c = finalCues[i];
     const text = cueText(c);
     if (cpsOf(text, cueDur(c)) <= ruleset.max_cps) continue;
     const neededMs = Math.ceil((weightedLength(text) / ruleset.max_cps) * 1000);
-    const nextStart = i + 1 < cues.length ? cues[i + 1].start_ms : c.end_ms + 3000;
-    const extended = Math.min(c.start_ms + neededMs, nextStart - ruleset.min_gap_ms);
+    const nextStart = i + 1 < finalCues.length ? finalCues[i + 1].start_ms : c.end_ms + 3000;
+    // 연장은 뒤 큐 간격과 최대 노출 시간 안에서만 — 그래도 초과하면 위반으로 선언
+    const extended = Math.min(c.start_ms + neededMs, nextStart - ruleset.min_gap_ms, c.start_ms + ruleset.max_duration_ms);
     if (extended > c.end_ms) {
       c.end_ms = extended;
-      fixLog.push(`큐 ${i + 1}: 읽기 속도 확보를 위해 노출 연장 (${cpsOf(text, cueDur(c))} CPS)`);
+      fixLog.push(`큐 ${i + 1}: 읽기 속도 확보를 위해 노출 연장 (${cpsDisplay(text, cueDur(c))} CPS)`);
     }
     if (cpsOf(text, cueDur(c)) > ruleset.max_cps) {
       violations.push({
@@ -336,78 +428,16 @@ export function buildCues(
         severity: "warn",
         cue_index: i + 1,
         time: fmtTime(c.start_ms, "vtt"),
-        found: `${cpsOf(text, cueDur(c))} CPS`,
+        found: `${cpsDisplay(text, cueDur(c))} CPS`,
         limit: `${ruleset.max_cps} CPS`,
         suggestion:
           `이 큐는 표시 시간 연장으로도 읽기 속도를 맞출 수 없습니다. ` +
-          `가중 ${Math.floor((cueDur(c) / 1000) * ruleset.max_cps)}자 이내로 축약이 필요합니다. ` +
-          `축약(의역)은 내용 판단이므로 서버가 하지 않습니다 — 에이전트가 사용자와 함께 줄여 주세요.`,
+          `가중 ${Math.floor((cueDur(c) / 1000) * ruleset.max_cps)}자 이내로 줄여야 합니다. ` +
+          `줄일 때는 덜 중요한 표현의 삭제·압축을 우선하고 의역(paraphrase)은 금지입니다 — ` +
+          `어휘·어순은 원 대사를 유지하세요 (Netflix II.1). ` +
+          `무엇을 지울지는 내용 판단이므로 서버가 하지 않습니다 — 에이전트가 사용자와 함께 결정하세요.`,
       });
     }
-  }
-
-  // 5) 화자 라벨(SDH) — 화자가 바뀌는 큐에만 [이름] 부착 (II.8)
-  if (opts.speaker_labels && ruleset.mode === "sdh") {
-    let prevSpeaker: string | undefined;
-    for (const c of cues) {
-      if (c.speaker && c.speaker !== prevSpeaker) {
-        c.lines = [`[${c.speaker}] ${c.lines[0]}`];
-      }
-      if (c.speaker) prevSpeaker = c.speaker;
-    }
-  }
-
-  // 6) 가사 표기 — ♪ 텍스트 ♪ (II.7)
-  for (const c of cues) {
-    if (c.kind === "lyrics") c.lines = [`♪ ${c.lines[0]} ♪`];
-  }
-
-  // 7) 표기 정규화 + 줄바꿈 — 2줄에 담기지 않으면 큐를 나눈다 (텍스트 유실 금지)
-  const finalCues: Cue[] = [];
-  cues.forEach((c, i) => {
-    const norm = normalizeTypography(c.lines.join(" "));
-    norm.changes.forEach((ch) => fixLog.push(`큐 ${i + 1}: ${ch}`));
-    const wrapped = wrapLines(norm.text, ruleset.max_line_weight, ruleset.max_lines);
-    if (!wrapped.overflow) {
-      finalCues.push({ ...c, lines: wrapped.lines });
-      return;
-    }
-    const parts = splitClause(norm.text);
-    if (parts.length > 1) {
-      const totalW = parts.reduce((s, p) => s + weightedLength(p), 0) || 1;
-      const span = c.end_ms - c.start_ms;
-      let t = c.start_ms;
-      parts.forEach((p, k) => {
-        const dur = k === parts.length - 1 ? c.end_ms - t : (span * weightedLength(p)) / totalW;
-        finalCues.push({
-          ...c,
-          start_ms: Math.round(t),
-          end_ms: Math.round(t + dur),
-          lines: wrapLines(p, ruleset.max_line_weight, ruleset.max_lines).lines,
-        });
-        t += dur;
-      });
-      fixLog.push(`큐 ${i + 1}: ${ruleset.max_lines}줄 초과 → ${parts.length}개 큐로 분할`);
-      return;
-    }
-    // 더 못 나누는 경우: 줄 수 초과 상태로 보존하고 위반으로 보고 (잘라내지 않는다)
-    finalCues.push({ ...c, lines: wrapped.lines });
-    violations.push({
-      rule: "cue_overflow",
-      severity: "warn",
-      cue_index: i + 1,
-      time: fmtTime(c.start_ms, "vtt"),
-      found: `${wrapped.lines.length}줄 (${ruleset.max_lines}줄 한도 초과)`,
-      limit: `${ruleset.max_lines}줄 × ${ruleset.max_line_weight}자`,
-      suggestion: "세그먼트를 더 잘게 나눠 다시 호출하거나 텍스트 축약을 검토하세요.",
-    });
-  });
-
-  // 8) 분할로 생긴 0-간격 정리 (최종 간격 보증)
-  for (let i = 0; i < finalCues.length - 1; i++) {
-    const limit = finalCues[i + 1].start_ms - ruleset.min_gap_ms;
-    if (finalCues[i].end_ms > limit)
-      finalCues[i].end_ms = Math.max(finalCues[i].start_ms + 200, limit);
   }
 
   return { cues: finalCues, fix_log: fixLog, violations };
@@ -437,6 +467,12 @@ export function insertSoundEvents(
       unplaced.push({ event: ev, reason: `라벨이 한 줄 한도(${ruleset.max_line_weight}자)를 넘습니다` });
       continue;
     }
+    // 독립 큐 최소 폭 — 삽입 후 재검증이 필요 없도록 선검증 (C-1):
+    // 최소 노출 시간과 라벨 읽기 속도(CPS)를 모두 만족하는 폭만 슬롯으로 인정
+    const neededMs = Math.max(
+      ruleset.min_duration_ms,
+      Math.ceil((weightedLength(label) / ruleset.max_cps) * 1000),
+    );
     // 1순위: at_ms 주변 ±5초 내의 큐 사이 간격에 독립 큐로 삽입
     let done = false;
     const slots: { start: number; end: number }[] = [];
@@ -449,10 +485,10 @@ export function insertSoundEvents(
     }
     for (const slot of slots) {
       const width = slot.end - slot.start;
-      if (width < 700) continue;
+      if (width < neededMs) continue;
       if (ev.at_ms < slot.start - 5000 || ev.at_ms > slot.end + 5000) continue;
-      const start = Math.min(Math.max(ev.at_ms, slot.start), slot.end - 700);
-      const end = Math.min(start + 1500, slot.end);
+      const start = Math.min(Math.max(ev.at_ms, slot.start), slot.end - neededMs);
+      const end = Math.min(start + Math.max(1500, neededMs), slot.end);
       const cue: Cue = { start_ms: Math.round(start), end_ms: Math.round(end), lines: [label], kind: "sound" };
       const at = cues.findIndex((c) => c.start_ms > cue.start_ms);
       if (at === -1) cues.push(cue);
@@ -464,6 +500,7 @@ export function insertSoundEvents(
     }
     if (done) continue;
     // 2순위: at_ms를 덮는 1줄 큐에 이중 표기(- 대사 / - [효과음])로 부착 (II.5)
+    // 부착으로 늘어나는 가중치가 호스트 큐의 읽기 속도를 깨지 않을 때만 (C-1 선검증)
     const host = cues.find(
       (c) => c.kind !== "sound" && c.start_ms <= ev.at_ms && ev.at_ms <= c.end_ms && c.lines.length === 1,
     );
@@ -472,9 +509,17 @@ export function insertSoundEvents(
       weightedLength(`- ${host.lines[0]}`) <= ruleset.max_line_weight &&
       weightedLength(`- ${label}`) <= ruleset.max_line_weight
     ) {
-      host.lines = [`- ${host.lines[0]}`, `- ${label}`];
-      log.push(`효과음 ${label}: 겹치는 큐에 이중 표기로 부착`);
-      placed++;
+      const attachedText = `- ${host.lines[0]} - ${label}`;
+      if (cpsOf(attachedText, cueDur(host)) <= ruleset.max_cps) {
+        host.lines = [`- ${host.lines[0]}`, `- ${label}`];
+        log.push(`효과음 ${label}: 겹치는 큐에 이중 표기로 부착`);
+        placed++;
+        continue;
+      }
+      unplaced.push({
+        event: ev,
+        reason: "겹치는 큐에 부착하면 읽기 속도(CPS) 상한을 초과하고, 주변에 독립 큐 간격도 없습니다",
+      });
       continue;
     }
     unplaced.push({ event: ev, reason: "주변에 충분한 간격이 없고 겹치는 큐에도 부착할 수 없습니다" });
@@ -582,8 +627,8 @@ export function auditCues(cues: Cue[], ruleset: Ruleset): Violation[] {
     if (dur > 0 && cpsOf(text, dur) > ruleset.max_cps)
       push(
         "cps_exceeded", "error", i,
-        `${cpsOf(text, dur)} CPS`, `≤ ${ruleset.max_cps} CPS`,
-        "노출 시간을 늘리거나(간격 차용) 텍스트 축약을 검토하세요. 자동 보정은 시간 연장까지만 수행합니다.",
+        `${cpsDisplay(text, dur)} CPS`, `≤ ${ruleset.max_cps} CPS`,
+        "노출 시간을 늘리거나(간격 차용) 텍스트 줄이기를 검토하세요 — 삭제·압축 우선, 의역 금지 (Netflix II.1). 자동 보정은 시간 연장까지만 수행합니다.",
       );
     c.lines.forEach((l) => {
       if (weightedLength(l) > ruleset.max_line_weight)
@@ -726,17 +771,19 @@ export function autofixCues(cuesIn: Cue[], ruleset: Ruleset): FixResult {
 
 export function cueStats(cues: Cue[], ruleset: Ruleset) {
   const dialogue = cues.filter((c) => cueText(c).trim());
+  // 통계는 표시용 — 원값으로 집계하고 마지막에 소수 2자리로 반올림 (판정은 auditCues/buildCues 소관)
   const cpsValues = dialogue
     .map((c) => cpsOf(cueText(c), cueDur(c)))
     .filter((v) => Number.isFinite(v));
+  const round2 = (v: number) => Math.round(v * 100) / 100;
   const avg = cpsValues.length
-    ? Math.round((cpsValues.reduce((a, b) => a + b, 0) / cpsValues.length) * 100) / 100
+    ? round2(cpsValues.reduce((a, b) => a + b, 0) / cpsValues.length)
     : 0;
   return {
     cue_count: cues.length,
     total_duration_ms: cues.length ? cues[cues.length - 1].end_ms - cues[0].start_ms : 0,
     avg_cps: avg,
-    max_cps: cpsValues.length ? Math.max(...cpsValues) : 0,
+    max_cps: cpsValues.length ? round2(Math.max(...cpsValues)) : 0,
     cps_limit: ruleset.max_cps,
     ruleset_id: ruleset.id,
   };

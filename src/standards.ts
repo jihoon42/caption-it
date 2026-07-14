@@ -130,8 +130,18 @@ function isFullWidth(cp: number): boolean {
   );
 }
 
-/** 초당 가중 글자 수 */
+/**
+ * 초당 가중 글자 수 — 원값 (판정용).
+ * 위반 판정은 반올림 전 원값으로 한다 — 반올림 후 비교하면 상한 바로 위의
+ * 값(예: 14.004)이 통과로 오판될 수 있다 (A-5/P2-4). 표시는 cpsDisplay 사용.
+ */
 export function cpsOf(text: string, durationMs: number): number {
   if (durationMs <= 0) return Number.POSITIVE_INFINITY;
-  return Math.round((weightedLength(text) / (durationMs / 1000)) * 100) / 100;
+  return weightedLength(text) / (durationMs / 1000);
+}
+
+/** 표시용 CPS — 소수 2자리 반올림. 판정에는 쓰지 않는다 */
+export function cpsDisplay(text: string, durationMs: number): number {
+  const v = cpsOf(text, durationMs);
+  return Number.isFinite(v) ? Math.round(v * 100) / 100 : v;
 }
