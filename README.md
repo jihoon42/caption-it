@@ -72,7 +72,10 @@ npm ci && npm run build && npm run demo
 - **내용 불변 원칙.** 서버가 허용하는 텍스트 변경은 표기 규칙 수준(`...`→`…`, 줄 끝 마침표·쉼표
   제거, 공백 정규화)뿐이며, 전부 `fix_log`에 기록됩니다. 텍스트는 절대 잘려나가지 않습니다.
 - **생성과 감사는 같은 룰북을 공유합니다.** `build_accessible_captions`가 만든 자막은
-  `audit_captions`를 무위반으로 통과합니다 (스모크 테스트로 보증).
+  서버 소관 규칙(타이밍·간격·겹침·줄 수·줄 길이·노출 시간)에서 `audit_captions`를
+  무위반으로 통과하며, 텍스트 축약이 필요해 남는 위반(읽기 속도·줄 수 불가피분)은
+  같은 큐의 `needs_attention`으로 반드시 선언됩니다 — 침묵 실패 없음
+  (시드 고정 property 테스트 2,000케이스로 보증).
 - **키가 없어도 동작합니다.** STT 프로바이더 미설정 시에도 자막 생성·감사·샘플 체험은
   완전 동작하며, 전사 요청에는 활성화 방법을 구조화해 안내합니다.
 
@@ -134,7 +137,7 @@ Resource: `guides://caption-standards` — 적용 규격 수치 전체와 출처
 ```bash
 npm ci && npm run build && npm start   # :8080/mcp (streamable HTTP, stateless)
 npm run demo                            # 키·네트워크 없이 30초 셀프 데모 (임시 포트)
-node test-client.mjs                    # 전체 시나리오 스모크 테스트 (13종)
+npm test                                # 스모크 13종(서버 기동 필요) + C-1 회귀 + property 2000케이스
 ```
 
 ## 10. KC 배포
