@@ -58,6 +58,11 @@ const segmentShape = z.object({
   kind: z.enum(["dialogue", "lyrics"]).optional().describe("lyrics면 ♪ … ♪로 표기 (기본 dialogue)"),
 });
 
+/** 하우스 스타일 표기 — 응답 레벨 고지 (P1-6 수용, A-4) */
+const STANDARD_NOTE =
+  "적용 규격은 Netflix Korean TTSG 수치 기준 (방통위 가이드라인은 원칙 근거, 법정 기준 아님. " +
+  "KBS 등 방송사 내규와 다를 수 있음)";
+
 const MODE_DESC =
   "sdh(청각장애인용 자막: 화자·소리 정보 포함, CPS 성인 14/아동 11) 또는 " +
   "standard(일반 자막: CPS 성인 12/아동 9). 기본 sdh";
@@ -208,6 +213,7 @@ export function buildServer(): McpServer {
         ...(args.format !== "vtt" ? { srt: emitSrt(built.cues) } : {}),
         stats,
         applied_ruleset: ruleset,
+        standard_note: STANDARD_NOTE,
         fix_log: built.fix_log,
         needs_attention: built.violations,
         ...(soundReport?.unplaced.length ? { unplaced_sound_events: soundReport.unplaced } : {}),
@@ -286,6 +292,7 @@ export function buildServer(): McpServer {
         syntax_errors: parsed.syntax_errors,
         stats_before: cueStats(parsed.cues, ruleset),
         applied_ruleset: ruleset,
+        standard_note: STANDARD_NOTE,
         violation_summary: bySeverity,
         violations,
         ...(fixed ? { fixed } : {}),
