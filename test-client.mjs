@@ -5,7 +5,16 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const URL_ = process.env.MCP_URL ?? "http://localhost:8080/mcp";
+// MCP_URL이 없으면 빌드된 앱을 인프로세스로 띄운다 (npm test 자급자족 — 외부 서버 불필요)
+let URL_ = process.env.MCP_URL;
+if (!URL_) {
+  const { createApp } = await import("./build/app.js");
+  const srv = await new Promise((resolve) => {
+    const s = createApp().listen(0, "127.0.0.1", () => resolve(s));
+  });
+  process.on("exit", () => srv.close());
+  URL_ = `http://127.0.0.1:${srv.address().port}/mcp`;
+}
 const client = new Client({ name: "test-client", version: "0.1.0" });
 await client.connect(new StreamableHTTPClientTransport(new URL(URL_)));
 
