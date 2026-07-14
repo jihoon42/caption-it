@@ -128,7 +128,8 @@ export function buildServer(): McpServer {
         "규격: 줄당 16자(라틴·공백 0.5자 가중)·최대 2줄·읽기 속도 상한·최소 노출 5/6초·화자 [이름] 표기·가사 ♪ 표기 " +
         "(Netflix Korean TTSG + 방통위 가이드라인, 근거는 guides://caption-standards 리소스). " +
         "서버는 어휘를 바꾸지 않습니다 — 표시 시간 연장으로 읽기 속도를 못 맞추는 큐는 needs_text_reduction으로 " +
-        "표시되며, 축약은 에이전트가 사용자와 함께 결정하세요. " +
+        "표시됩니다. 줄일 때는 삭제·압축을 우선하고 의역은 금지 (Netflix II.1, 어휘·어순은 원 대사 유지) — " +
+        "무엇을 지울지는 에이전트가 사용자와 함께 결정하세요. " +
         "소리 정보(sound_events)는 줄거리에 중요한 소리만: 어떤 소리가 중요한지는 에이전트/사용자의 판단입니다. " +
         BAND_DESC,
       inputSchema: {
@@ -214,7 +215,8 @@ export function buildServer(): McpServer {
         content_integrity:
           "서버는 어휘를 변경하지 않았습니다. 허용된 표기 교정(말줄임표 통일, 줄 끝 마침표 제거 등)은 fix_log에 전부 기록되어 있습니다.",
         next_steps:
-          "needs_attention에 needs_text_reduction이 있으면 해당 큐의 축약안을 사용자와 함께 만들어 segments를 수정 후 재호출하세요. " +
+          "needs_attention에 needs_text_reduction이 있으면 해당 큐를 사용자와 함께 줄여 segments를 수정 후 재호출하세요 " +
+          "(삭제·압축 우선, 의역 금지 — Netflix II.1). " +
           "완성본 검증은 audit_captions로 할 수 있습니다.",
       });
     },
@@ -228,7 +230,8 @@ export function buildServer(): McpServer {
         "기존 WebVTT/SRT 자막(유튜브 자동 자막 내보내기 등)을 한국어 접근성 규격으로 감사하고, " +
         "내용을 바꾸지 않는 범위에서 자동 보정본을 만듭니다. " +
         "검사: 읽기 속도(CPS)·줄당 자수·줄 수·노출 시간·큐 겹침·간격·줄 끝 구두점·말줄임표·가사 ♪ 짝·화자/소리 정보 유무(SDH). " +
-        "보정: 표기·줄바꿈·타이밍만. 텍스트 축약(의역)은 내용 판단이므로 하지 않으며 위반으로 보고만 합니다. " +
+        "보정: 표기·줄바꿈·타이밍만. 텍스트 줄이기는 내용 판단이므로 하지 않으며 위반으로 보고만 합니다 " +
+        "(줄일 때는 삭제·압축 우선, 의역 금지 — Netflix II.1). " +
         "자막이 아예 없는 콘텐츠는 transcribe_media → build_accessible_captions 경로를 사용하세요.",
       inputSchema: {
         caption_text: z.string().min(1).max(200_000).describe("WebVTT 또는 SRT 원문 (형식 자동 감지)"),
@@ -274,7 +277,8 @@ export function buildServer(): McpServer {
           stats_after: cueStats(fix.cues, ruleset),
           content_integrity:
             "보정은 표기·줄바꿈·타이밍만 변경했습니다. 어휘·문장은 그대로입니다. " +
-            "remaining_violations의 cps_exceeded는 텍스트 축약 없이는 해결 불가 — 축약은 사용자와 함께 결정하세요.",
+            "remaining_violations의 cps_exceeded는 텍스트를 줄이지 않고는 해결 불가 — " +
+            "줄일 때는 삭제·압축을 우선하고 의역은 금지입니다 (Netflix II.1). 사용자와 함께 결정하세요.",
         };
       }
       return json({
@@ -343,7 +347,8 @@ export function buildServer(): McpServer {
               },
               content_policy:
                 "서버는 어휘를 변경하지 않는다. 표기 교정(… 통일, 줄 끝 마침표 제거)만 수행하며 전부 fix_log에 기록된다. " +
-                "읽기 속도 위반이 시간 연장으로 해결되지 않으면 needs_text_reduction으로 보고하고 축약 판단은 에이전트/사람에게 넘긴다.",
+                "읽기 속도 위반이 시간 연장으로 해결되지 않으면 needs_text_reduction으로 보고하고 판단은 에이전트/사람에게 넘긴다. " +
+                "줄일 때는 덜 중요한 표현의 삭제·압축을 우선하고 의역(paraphrase)은 금지 — 어휘·어순은 원 대사 유지 (Netflix II.1).",
               support_band_mapping:
                 "링킷 support_band=intensive → 해당 모드의 아동 등급 CPS + 최소 노출 1초. " +
                 "의료적 판정이 아니라 '표시 시간을 얼마나 보수적으로 줄 것인가'의 매핑이다.",

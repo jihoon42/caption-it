@@ -340,8 +340,10 @@ export function buildCues(
         limit: `${ruleset.max_cps} CPS`,
         suggestion:
           `이 큐는 표시 시간 연장으로도 읽기 속도를 맞출 수 없습니다. ` +
-          `가중 ${Math.floor((cueDur(c) / 1000) * ruleset.max_cps)}자 이내로 축약이 필요합니다. ` +
-          `축약(의역)은 내용 판단이므로 서버가 하지 않습니다 — 에이전트가 사용자와 함께 줄여 주세요.`,
+          `가중 ${Math.floor((cueDur(c) / 1000) * ruleset.max_cps)}자 이내로 줄여야 합니다. ` +
+          `줄일 때는 덜 중요한 표현의 삭제·압축을 우선하고 의역(paraphrase)은 금지입니다 — ` +
+          `어휘·어순은 원 대사를 유지하세요 (Netflix II.1). ` +
+          `무엇을 지울지는 내용 판단이므로 서버가 하지 않습니다 — 에이전트가 사용자와 함께 결정하세요.`,
       });
     }
   }
@@ -583,7 +585,7 @@ export function auditCues(cues: Cue[], ruleset: Ruleset): Violation[] {
       push(
         "cps_exceeded", "error", i,
         `${cpsOf(text, dur)} CPS`, `≤ ${ruleset.max_cps} CPS`,
-        "노출 시간을 늘리거나(간격 차용) 텍스트 축약을 검토하세요. 자동 보정은 시간 연장까지만 수행합니다.",
+        "노출 시간을 늘리거나(간격 차용) 텍스트 줄이기를 검토하세요 — 삭제·압축 우선, 의역 금지 (Netflix II.1). 자동 보정은 시간 연장까지만 수행합니다.",
       );
     c.lines.forEach((l) => {
       if (weightedLength(l) > ruleset.max_line_weight)
