@@ -75,11 +75,15 @@ export function normalizeTypography(text: string): { text: string; changes: stri
     t = t.replace(/\.{3,}/g, "…");
     changes.push("말줄임표를 U+2026(…)으로 통일");
   }
-  // 줄(큐) 끝 마침표·쉼표 제거 — 숫자 뒤 마침표(예: "3.")는 보존
+  // 줄(큐) 끝 마침표·쉼표 제거 — 숫자 뒤 마침표(예: "3.")는 보존.
+  // 텍스트 전체가 구두점뿐이면 제거하지 않는다 (내용 삭제가 되므로 — 빈 큐 금지)
   const m = t.match(/([.,]+)$/);
   if (m && !/\d[.,]+$/.test(t)) {
-    t = t.slice(0, -m[1].length).trimEnd();
-    changes.push("줄 끝 마침표·쉼표 제거 (Netflix I.13)");
+    const stripped = t.slice(0, -m[1].length).trimEnd();
+    if (stripped) {
+      t = stripped;
+      changes.push("줄 끝 마침표·쉼표 제거 (Netflix I.13)");
+    }
   }
   return { text: t, changes };
 }
@@ -309,6 +313,7 @@ export function buildCues(
     lyrics ? `♪ ${label ?? ""}${text} ♪` : `${label ?? ""}${text}`;
   const violations: Violation[] = [];
   const finalCues: Cue[] = [];
+  const overflowIdx: number[] = []; // cue_overflow는 타이밍 확정 후 최종 시각으로 선언
   withLabel.forEach(({ unit: u, label }, i) => {
     const lyrics = u.kind === "lyrics";
     const norm = normalizeTypography(u.text);
@@ -340,42 +345,68 @@ export function buildCues(
         speaker: u.speaker,
         kind: u.kind ?? "dialogue",
       });
-      if (wrapped.overflow)
-        violations.push({
-          rule: "cue_overflow",
-          severity: "warn",
-          cue_index: finalCues.length,
-          time: fmtTime(finalCues[finalCues.length - 1].start_ms, "vtt"),
-          found: `${wrapped.lines.length}줄 (${ruleset.max_lines}줄 한도 초과)`,
-          limit: `${ruleset.max_lines}줄 × ${ruleset.max_line_weight}자`,
-          suggestion: "세그먼트를 더 잘게 나눠 다시 호출하거나 텍스트 축약을 검토하세요.",
-        });
+      if (wrapped.overflow) overflowIdx.push(finalCues.length - 1);
       t += dur;
     });
   });
 
-  // 4) 겹침 제거 + 최소 간격 확보 (뒤 큐가 기준) — 최종 텍스트 확정 후의 산술
+  // 4) 앞 큐 종료 당기기 — 뒤 큐와 겹치면 앞 큐를 줄이되, 읽기 하한
+  //    (최소 노출·CPS 필요 시간) 아래로는 줄이지 않는다. 하한 때문에 못 줄인
+  //    잔여 겹침은 5)의 시작 밀기가 해소한다 (C-3 정책: 쥐어짜기 대신 밀기).
+  const readFloorMs = (text: string) =>
+    Math.max(
+      ruleset.min_duration_ms,
+      Math.min(Math.ceil((weightedLength(text) / ruleset.max_cps) * 1000), ruleset.max_duration_ms),
+    );
   for (let i = 0; i < finalCues.length - 1; i++) {
+    const c = finalCues[i];
     const limit = finalCues[i + 1].start_ms - ruleset.min_gap_ms;
-    if (finalCues[i].end_ms > limit) {
-      finalCues[i].end_ms = Math.max(finalCues[i].start_ms + 200, limit);
+    if (c.end_ms <= limit) continue;
+    const shrunk = Math.max(limit, c.start_ms + readFloorMs(cueText(c)));
+    if (shrunk < c.end_ms) {
+      c.end_ms = shrunk;
       fixLog.push(`큐 ${i + 1}: 다음 큐와의 간격 ${ruleset.min_gap_ms}ms 확보를 위해 종료 시각 조정`);
     }
   }
 
-  // 5) 최소/최대 노출 시간
+  // 5) 시작 밀기 + 최소/최대 노출 — 겹침·간격·노출시간을 완전 보증하는 단일 전진 패스.
+  //    동일/역전 시작 등 공간이 없는 큐는 시작을 뒤로 민다 (동기 오차는 fix_log에 기록).
+  let prevEnd = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < finalCues.length; i++) {
     const c = finalCues[i];
+    if (Number.isFinite(prevEnd)) {
+      const minStart = prevEnd + ruleset.min_gap_ms;
+      if (c.start_ms < minStart) {
+        const delta = minStart - c.start_ms;
+        c.start_ms += delta;
+        c.end_ms += delta;
+        fixLog.push(`큐 ${i + 1}: 겹침/간격 해소를 위해 시작을 ${delta}ms 뒤로 이동 (동기 오차 발생)`);
+      }
+    }
     if (cueDur(c) < ruleset.min_duration_ms) {
-      const nextStart = i + 1 < finalCues.length ? finalCues[i + 1].start_ms : Number.POSITIVE_INFINITY;
-      c.end_ms = Math.min(c.start_ms + ruleset.min_duration_ms, nextStart - ruleset.min_gap_ms);
-      if (cueDur(c) >= ruleset.min_duration_ms)
-        fixLog.push(`큐 ${i + 1}: 최소 노출 ${ruleset.min_duration_ms}ms 확보 (뒤 간격 차용)`);
+      c.end_ms = c.start_ms + ruleset.min_duration_ms;
+      fixLog.push(`큐 ${i + 1}: 최소 노출 ${ruleset.min_duration_ms}ms 확보`);
     }
     if (cueDur(c) > ruleset.max_duration_ms) {
       c.end_ms = c.start_ms + ruleset.max_duration_ms;
       fixLog.push(`큐 ${i + 1}: 최대 노출 ${ruleset.max_duration_ms}ms로 제한`);
     }
+    prevEnd = c.end_ms;
+  }
+
+  // 타이밍 확정 후 cue_overflow 선언 — 위반의 time이 최종 출력 큐 시각과 일치해야
+  // audit 결과와 대조(불변식 ⓑ)가 가능하다
+  for (const idx of overflowIdx) {
+    const c = finalCues[idx];
+    violations.push({
+      rule: "cue_overflow",
+      severity: "warn",
+      cue_index: idx + 1,
+      time: fmtTime(c.start_ms, "vtt"),
+      found: `${c.lines.length}줄 (${ruleset.max_lines}줄 한도 초과)`,
+      limit: `${ruleset.max_lines}줄 × ${ruleset.max_line_weight}자`,
+      suggestion: "세그먼트를 더 잘게 나눠 다시 호출하거나 텍스트 축약을 검토하세요.",
+    });
   }
 
   // 6) CPS 보정 — 라벨·♪ 포함 최종 텍스트로 판정. 표시 시간 연장만, 축약은 하지 않는다.
@@ -385,7 +416,8 @@ export function buildCues(
     if (cpsOf(text, cueDur(c)) <= ruleset.max_cps) continue;
     const neededMs = Math.ceil((weightedLength(text) / ruleset.max_cps) * 1000);
     const nextStart = i + 1 < finalCues.length ? finalCues[i + 1].start_ms : c.end_ms + 3000;
-    const extended = Math.min(c.start_ms + neededMs, nextStart - ruleset.min_gap_ms);
+    // 연장은 뒤 큐 간격과 최대 노출 시간 안에서만 — 그래도 초과하면 위반으로 선언
+    const extended = Math.min(c.start_ms + neededMs, nextStart - ruleset.min_gap_ms, c.start_ms + ruleset.max_duration_ms);
     if (extended > c.end_ms) {
       c.end_ms = extended;
       fixLog.push(`큐 ${i + 1}: 읽기 속도 확보를 위해 노출 연장 (${cpsDisplay(text, cueDur(c))} CPS)`);
