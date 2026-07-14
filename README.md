@@ -29,7 +29,7 @@
 npm ci && npm run build && npm run demo
 ```
 
-**카카오톡 나벳방에서 말 걸어보기** — PlayMCP에 연결했다면 이렇게 시작하세요:
+**카카오톡 AI 채팅에서 말 걸어보기** — PlayMCP에 연결했다면 이렇게 시작하세요:
 
 1. "회의 녹음을 자막으로 만들고 싶어. 키가 없으니 샘플로 먼저 보여줘." (샘플 전사 → 자막 생성)
 2. "유튜브에서 받은 자막 파일이야. 접근성 규격에 맞는지 점검하고 고칠 수 있는 건 고쳐 줘." (감사·보정)
@@ -137,7 +137,7 @@ Resource: `guides://caption-standards` — 적용 규격 수치 전체와 출처
 ```bash
 npm ci && npm run build && npm start   # :8080/mcp (streamable HTTP, stateless)
 npm run demo                            # 키·네트워크 없이 30초 셀프 데모 (임시 포트)
-npm test                                # 스모크 13종(서버 기동 필요) + C-1 회귀 + property 2000케이스
+npm test                                # 스모크 13종 + C-1 회귀 + property 2000케이스 (서버 자동 기동)
 ```
 
 ## 10. KC 배포
