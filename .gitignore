@@ -2,3 +2,11 @@ node_modules/
 build/
 server.log
 SUBMISSION.md
+
+# 테스트용 오디오 (레포에 올리지 않음)
+*.mp3
+*.wav
+*.m4a
+*.ogg
+*.webm
+*.mp4
