@@ -310,7 +310,7 @@ export function buildCues(
   // 3) 표기 정규화 → 장식 합성 → 줄바꿈. 2줄에 담기지 않으면 "대사"를 분할하되
   //    라벨은 첫 조각의 대사에 붙인다 — 라벨만 남는 유령 큐 금지 (C-1). 텍스트 유실 금지.
   const compose = (label: string | undefined, text: string, lyrics: boolean) =>
-    lyrics ? `♪ ${label ?? ""}${text} ♪` : `${label ?? ""}${text}`;
+    lyrics ? `${label ?? ""}♪ ${text} ♪` : `${label ?? ""}${text}`;
   const violations: Violation[] = [];
   const finalCues: Cue[] = [];
   const overflowIdx: number[] = []; // cue_overflow는 타이밍 확정 후 최종 시각으로 선언
