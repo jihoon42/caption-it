@@ -3,10 +3,11 @@ build/
 server.log
 SUBMISSION.md
 
-# 작업 계획·진행 메모 (공개 레포에 올리지 않음 — IMPROVEMENT_PLAN.md 헤더 참조)
-IMPROVEMENT_PLAN.md
-PROGRESS.md
-*Zone.Identifier
+# 작업 계획·진행 메모 (공개 레포에 올리지 않음)
+*.md
+
+# 단, READMEE.md 파일은 예외 처리 (추적)
+!READMEE.md
 
 # 테스트용 오디오 (레포에 올리지 않음)
 *.mp3
